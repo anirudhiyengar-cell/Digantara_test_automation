@@ -157,6 +157,7 @@ This prevents UnicodeDecodeError when test scripts output non-ASCII bytes.
 
 import html as _html                           # ← Library for escaping HTML special characters
 import json                                     # ← Library for reading/writing JSON files (config loading)
+import datetime                                  # ← Library for timestamps in saved metadata
 import os                                       # ← Library for environment variables and file operations
 import re                                       # ← Library for regular expressions (pattern matching in output)
 import shutil                                   # ← Library for high-level file operations (folder deletion)
@@ -271,19 +272,19 @@ def _instrument_info_html(board: str, suite: str) -> str:
         return ""
 
     rows_html = "".join(
-        f"<div style='display:flex;align-items:center;gap:7px;padding:3px 0;"
-        f"color:#475569;font-size:0.83em;'>"
+        f"<div style='display:flex;align-items:center;gap:8px;padding:4px 0;"
+        f"color:var(--t-txt);font-size:0.82em;'>"
         f"<span style='width:4px;height:4px;border-radius:50%;"
-        f"background:#1e40af;display:inline-block;flex-shrink:0;'></span>"
+        f"background:var(--t-acc);display:inline-block;flex-shrink:0;'></span>"
         f"{_html.escape(lbl)}</div>"
         for lbl in labels
     )
     return (
-        f"<div style='background:#0f172a;border:1px solid #1e293b;"
-        f"border-left:2px solid #1d4ed8;border-radius:6px;"
-        f"padding:8px 12px;margin-top:8px;'>"
-        f"<div style='color:#334155;font-size:0.63em;font-weight:700;"
-        f"text-transform:uppercase;letter-spacing:2px;margin-bottom:7px;'>Instruments</div>"
+        f"<div style='background:var(--t-surf);border:1px solid var(--t-bdr);"
+        f"border-left:2px solid var(--t-acc);border-radius:6px;"
+        f"padding:10px 14px;margin-top:10px;'>"
+        f"<div style='color:var(--t-txd);font-size:0.62em;font-weight:700;"
+        f"text-transform:uppercase;letter-spacing:2px;margin-bottom:8px;'>Required Instruments</div>"
         f"{rows_html}</div>"
     )
 
@@ -294,33 +295,52 @@ def _instrument_info_html(board: str, suite: str) -> str:
 
 _LOG_STYLE = (
     "height:460px;overflow-y:auto;"
-    "background:#0a0f1e;"
-    "color:#8892a4;"
+    "background:var(--t-panel);"
     "font-family:ui-monospace,'Cascadia Code','Fira Code','Consolas',monospace;"
     "font-size:0.82em;"
     "padding:14px 16px;"
     "white-space:pre-wrap;"
-    "border:1px solid #1a2035;"
+    "border:1px solid var(--t-bdr);"
     "border-radius:6px;"
-    "line-height:1.65;"
+    "line-height:1.75;"
 )
 
-# ← JavaScript snippet that auto-scrolls the log to the bottom when content updates
-# The <img onerror> fires synchronously the moment the HTML is inserted into
-# the DOM, scrolling the log div to the very bottom on every single update.
 _SCROLL_SNIPPET = (
-    '<img src="#" style="display:none" onerror="'  # ← Invisible image that triggers onerror handler
-    "(function(){var d=document.getElementById('_diglog');"  # ← Get the log div by ID
-    "if(d){d.scrollTop=d.scrollHeight;}})()"  # ← Scroll to bottom (scrollHeight = bottom)
-    '">'  # ← Close the onerror attribute
+    '<img src="#" style="display:none" onerror="'
+    "(function(){var d=document.getElementById('_diglog');"
+    "if(d){d.scrollTop=d.scrollHeight;}})()"
+    '">'
 )
+
+def _classify_line(raw: str) -> str:
+    s = raw.strip()
+    if not s:
+        return "color:var(--t-txt);"
+    upper = s.upper()
+    if "PASS" in upper and "FAIL" not in upper:
+        return "color:#10b981;font-weight:600;"
+    if "FAIL" in upper:
+        return "color:#ef4444;font-weight:600;"
+    if "ERROR" in upper or "exception" in s.lower() or "traceback" in s.lower():
+        return "color:#f59e0b;font-weight:600;"
+    if s.startswith(("─", "━", "═")) or (len(s) > 4 and s == s[0] * len(s) and s[0] in "=-"):
+        return "color:var(--t-txg);"
+    if s.startswith(("Board:", "Suite:", "Config:", "Output:", "Command:", "Results saved:")):
+        return "color:var(--t-acc2);font-weight:600;"
+    return "color:var(--t-txt);"
 
 def _log_html(lines: list[str], placeholder: str = "(No output yet)") -> str:
-    # ← Convert a list of output lines into styled HTML that auto-scrolls
-    body = _html.escape("".join(lines)) if lines else placeholder  # ← Join lines, escape HTML, or use placeholder
+    if not lines:
+        body = f"<span style='color:var(--t-txg);font-style:italic;'>{_html.escape(placeholder)}</span>"
+    else:
+        parts = []
+        for line in lines:
+            css = _classify_line(line)
+            parts.append(f"<span style='{css}'>{_html.escape(line)}</span>")
+        body = "".join(parts)
     return (
-        f'<div id="_diglog" style="{_LOG_STYLE}">{body}</div>'  # ← Create div with ID and styling, insert body
-        + _SCROLL_SNIPPET  # ← Add JavaScript snippet for auto-scroll
+        f'<div id="_diglog" style="{_LOG_STYLE}">{body}</div>'
+        + _SCROLL_SNIPPET
     )
 
 
@@ -494,13 +514,40 @@ def stop_test() -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ↓ BELOW: Keep results button - saves test output folder and metadata
+# ↓ BELOW: Keep results - two-step flow: show comments form, then confirm & save
 # ─────────────────────────────────────────────────────────────────────────────
 
-def keep_results() -> tuple[str, gr.update]:
-    # ← User chose to keep the test results
-    path = _last_run_dir  # ← Get the results folder path
-    return _log_html([], f"Results kept:\n{path}"), gr.update(visible=False)  # ← Show message and hide buttons
+def on_keep_click() -> tuple:
+    # Step 1: hide the Keep/Delete row, reveal the comments form
+    return gr.update(visible=False), gr.update(visible=True)
+
+
+def confirm_keep(tester_name: str, board_serial: str,
+                 board: str, suite: str, comments: str) -> tuple:
+    # Step 2: write test_metadata.json to the run folder, then tidy up the UI
+    path = _last_run_dir
+    if path and path.exists():
+        metadata = {
+            "tester_name":  tester_name.strip() or "Unknown",
+            "board_serial": board_serial.strip() or "N/A",
+            "board_type":   board  or "N/A",
+            "test_suite":   suite  or "N/A",
+            "comments":     comments.strip(),
+            "saved_at":     datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        (path / "test_metadata.json").write_text(
+            json.dumps(metadata, indent=2), encoding="utf-8"
+        )
+    return (
+        _log_html([], f"Results saved:\n{path}"),
+        gr.update(visible=False),  # hide comments form
+        "",                         # clear comments textbox
+    )
+
+
+def on_cancel_keep() -> tuple:
+    # User changed their mind — put the Keep/Delete buttons back
+    return gr.update(visible=True), gr.update(visible=False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -599,25 +646,35 @@ def _parse_result_rows(lines: list[str]) -> dict:
 
 # ← Styling constants for the results table
 _TBL_WRAP  = (
-    "margin-top:14px;overflow-x:auto;"
+    "margin-top:18px;overflow-x:auto;"
+    "animation:dta-fadein .35s ease both;"
 )
 _TBL_TITLE = (
-    "color:#4fc3f7;font-weight:600;margin-bottom:8px;font-size:0.9em;"
-    "font-family:'Consolas','Courier New',monospace;"
+    "color:var(--t-acc2);font-weight:700;margin-bottom:10px;font-size:0.78em;"
+    "text-transform:uppercase;letter-spacing:2px;"
+    "font-family:ui-monospace,'Cascadia Code',monospace;"
+    "padding-bottom:8px;border-bottom:1px solid var(--t-bdr);"
 )
 _TBL_CSS   = (
     "border-collapse:collapse;width:100%;"
-    "font-family:'Consolas','Courier New',monospace;font-size:0.85em;"
-    "background:#1e1e1e;color:#d4d4d4;"
+    "font-family:ui-monospace,'Cascadia Code','Fira Code','Consolas',monospace;"
+    "font-size:0.83em;"
+    "background:var(--t-surf);color:var(--t-txt);"
+    "border-radius:7px;overflow:hidden;"
 )
 _TH_CSS    = (
-    "background:#2a3a4a;color:#4fc3f7;padding:8px 14px;"
-    "text-align:left;border:1px solid #3a5a7a;font-weight:600;"
+    "background:var(--t-elev);color:var(--t-txd);padding:9px 16px;"
+    "text-align:left;border-bottom:1px solid var(--t-bdr);"
+    "font-weight:700;font-size:0.75em;text-transform:uppercase;letter-spacing:1.5px;"
 )
-_TD_CSS    = "padding:7px 14px;border:1px solid #383838;"
-_PASS_CSS  = "color:#4caf50;font-weight:bold;"
-_FAIL_CSS  = "color:#f44336;font-weight:bold;"
-_ERR_CSS   = "color:#ff9800;font-weight:bold;"
+_TD_CSS    = "padding:8px 16px;border-bottom:1px solid var(--t-bdr2);color:var(--t-txt);"
+_PASS_CSS  = "color:#10b981;font-weight:700;"
+_FAIL_CSS  = "color:#ef4444;font-weight:700;"
+_ERR_CSS   = "color:#f59e0b;font-weight:700;"
+
+_TBL_ROW_HOVER = (
+    "<style>#_dta_tbl tr:hover td{background:rgba(59,130,246,.05)!important;}</style>"
+)
 
 
 def _parse_seq_result_rows(lines: list[str]) -> list[dict]:
@@ -655,9 +712,12 @@ def _build_seq_results_table_html(rows: list[dict]) -> str:
         cfg = r.get("config", "")
         configs.setdefault(cfg, []).append(r)
 
-    th_base = f"background:#2a3a4a;color:#4fc3f7;padding:8px 14px;text-align:left;border:1px solid #3a5a7a;font-weight:600;"
-    td_base = f"padding:7px 14px;border:1px solid #383838;"
-    cfg_hdr = f"background:#1a2a3a;color:#81c995;padding:6px 14px;border:1px solid #3a5a7a;font-style:italic;font-size:0.83em;"
+    th_base = _TH_CSS
+    td_base = _TD_CSS
+    cfg_hdr = (
+        "background:var(--t-elev);color:var(--t-acc2);padding:7px 16px;"
+        "border-bottom:1px solid var(--t-bdr);font-style:italic;font-size:0.80em;font-weight:600;"
+    )
 
     headers = ["Rail", "90% Voltage", "Measured Time (ms)", "Pass/Fail"]
     th_row  = "".join(f"<th style='{th_base}'>{h}</th>" for h in headers)
@@ -679,11 +739,11 @@ def _build_seq_results_table_html(rows: list[dict]) -> str:
             meas_str = f"{meas_ms:.3f}" if meas_ms is not None else "N/A"
 
             if status == "PASS":
-                s_css = "color:#4caf50;font-weight:bold;"
+                s_css = _PASS_CSS
             elif status == "FAIL":
-                s_css = "color:#f44336;font-weight:bold;"
+                s_css = _FAIL_CSS
             else:
-                s_css = "color:#ff9800;font-weight:bold;"
+                s_css = _ERR_CSS
 
             cells = (
                 f"<td style='{td_base}'>{rail}</td>"
@@ -694,17 +754,13 @@ def _build_seq_results_table_html(rows: list[dict]) -> str:
             tbody_parts.append(f"<tr>{cells}</tr>")
 
     tbody = f"<tbody>{''.join(tbody_parts)}</tbody>"
-    tbl   = (
-        f"<table style='border-collapse:collapse;width:100%;"
-        f"font-family:Consolas,monospace;font-size:0.85em;"
-        f"background:#1e1e1e;color:#d4d4d4;'>"
-        f"{thead}{tbody}</table>"
-    )
+    tbl   = f"<table id='_dta_tbl' style='{_TBL_CSS}'>{thead}{tbody}</table>"
     return (
-        f"<div style='margin-top:14px;overflow-x:auto'>"
-        f"<div style='color:#4fc3f7;font-weight:600;margin-bottom:8px;font-size:0.9em;"
-        f"font-family:Consolas,monospace;'>Results</div>"
-        f"{tbl}</div>"
+        _TBL_ROW_HOVER
+        + f"<div style='{_TBL_WRAP}'>"
+        + f"<div style='{_TBL_TITLE}'>Results</div>"
+        + tbl
+        + "</div>"
     )
 
 
@@ -758,10 +814,11 @@ def _build_results_table_html(rows: dict) -> str:
     tbody = f"<tbody>{''.join(tbody_rows)}</tbody>"
 
     return (
-        f"<div style='{_TBL_WRAP}'>"
-        f"<div style='{_TBL_TITLE}'>Results</div>"
-        f"<table style='{_TBL_CSS}'>{thead}{tbody}</table>"
-        f"</div>"
+        _TBL_ROW_HOVER
+        + f"<div style='{_TBL_WRAP}'>"
+        + f"<div style='{_TBL_TITLE}'>Results</div>"
+        + f"<table id='_dta_tbl' style='{_TBL_CSS}'>{thead}{tbody}</table>"
+        + "</div>"
     )
 
 
@@ -770,9 +827,25 @@ def _build_results_table_html(rows: dict) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _CSS = """
+/* == Theme variables (Orbital default) ===================================== */
+:root {
+    --t-bg:    #020617;
+    --t-panel: #0a0f1e;
+    --t-surf:  #0c1220;
+    --t-elev:  #0f172a;
+    --t-bdr:   #1a2540;
+    --t-bdr2:  #0f1a2e;
+    --t-acc:   #2563eb;
+    --t-acc2:  #4fc3f7;
+    --t-txt:   #8892a4;
+    --t-txh:   #c8d6ea;
+    --t-txd:   #4a5f7a;
+    --t-txg:   #2d4060;
+}
+
 /* == Base ================================================================= */
 .gradio-container {
-    background : #020617 !important;
+    background : var(--t-bg) !important;
     max-width  : 100%    !important;
     padding    : 0       !important;
     font-family: ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif !important;
@@ -788,47 +861,47 @@ footer { display:none !important; }
 
 /* == Inputs ================================================================ */
 textarea, input[type="text"], input[type="number"] {
-    background   : #0c1220 !important;
-    border       : 1px solid #1a2540 !important;
+    background   : var(--t-surf) !important;
+    border       : 1px solid var(--t-bdr) !important;
     border-radius: 6px    !important;
-    color        : #dde3ee !important;
+    color        : var(--t-txh) !important;
     font-size    : 0.87em  !important;
     transition   : border-color .15s, box-shadow .15s !important;
 }
 textarea:focus, input:focus {
-    border-color : #3b82f6 !important;
+    border-color : var(--t-acc) !important;
     box-shadow   : 0 0 0 3px rgba(59,130,246,.1) !important;
     outline      : none    !important;
 }
 
 /* == Labels ================================================================ */
 label span, .label-wrap span {
-    color          : #2d3f5a !important;
-    font-size      : 0.71em  !important;
+    color          : var(--t-txd) !important;
+    font-size      : 0.72em  !important;
     font-weight    : 700     !important;
     text-transform : uppercase !important;
-    letter-spacing : 0.9px   !important;
+    letter-spacing : 1.1px   !important;
 }
 
 /* == Dropdowns ============================================================= */
 select {
-    background   : #0c1220 !important;
-    border       : 1px solid #1a2540 !important;
+    background   : var(--t-surf) !important;
+    border       : 1px solid var(--t-bdr) !important;
     border-radius: 6px     !important;
-    color        : #dde3ee !important;
+    color        : var(--t-txh) !important;
 }
 
 /* == Rail checkboxes ======================================================= */
 fieldset, .gr-checkbox-group {
-    background   : #0c1220 !important;
-    border       : 1px solid #1a2540 !important;
+    background   : var(--t-surf) !important;
+    border       : 1px solid var(--t-bdr) !important;
     border-radius: 6px !important;
     padding      : 8px !important;
 }
 
 /* == RUN =================================================================== */
 #run-btn > button {
-    background    : #2563eb !important;
+    background    : var(--t-acc) !important;
     color         : #fff    !important;
     border        : none    !important;
     border-radius : 6px     !important;
@@ -839,107 +912,246 @@ fieldset, .gr-checkbox-group {
                     inset 0 1px 0 rgba(255,255,255,.07) !important;
 }
 #run-btn > button:hover  {
-    background : #3b82f6 !important;
+    background : var(--t-acc2) !important;
     box-shadow : 0 4px 14px rgba(59,130,246,.35) !important;
+    transform  : translateY(-1px) !important;
 }
-#run-btn > button:active { transform:scale(0.98) !important; }
+#run-btn > button:active { transform:translateY(0) scale(0.98) !important; }
 
 /* == STOP ================================================================== */
 #stop-btn > button {
     background   : transparent !important;
-    color        : #334155     !important;
-    border       : 1px solid #1a2540 !important;
+    color        : var(--t-txd) !important;
+    border       : 1px solid var(--t-bdr) !important;
     border-radius: 6px  !important;
     font-weight  : 600  !important;
-    transition   : all .15s !important;
+    letter-spacing: 0.3px !important;
+    transition   : all .18s ease !important;
 }
 #stop-btn > button:hover {
     color        : #ef4444 !important;
-    border-color : rgba(239,68,68,.4) !important;
-    background   : rgba(239,68,68,.04) !important;
+    border-color : rgba(239,68,68,.45) !important;
+    background   : rgba(239,68,68,.06) !important;
+    box-shadow   : 0 0 12px rgba(239,68,68,.12) !important;
+    transform    : translateY(-1px) !important;
 }
+#stop-btn > button:active { transform:translateY(0) !important; }
 
 /* == Utility buttons ======================================================= */
 #browse-btn > button, #send-btn > button {
     background   : transparent !important;
-    color        : #2d3f5a    !important;
-    border       : 1px solid #1a2540 !important;
+    color        : var(--t-txd) !important;
+    border       : 1px solid var(--t-bdr) !important;
     border-radius: 6px  !important;
     font-size    : 0.83em !important;
-    transition   : all .15s !important;
+    font-weight  : 500 !important;
+    transition   : all .15s ease !important;
 }
 #browse-btn > button:hover, #send-btn > button:hover {
-    color:#64748b !important; border-color:#2d3f5a !important;
+    color        : var(--t-txt)    !important;
+    border-color : var(--t-txg)   !important;
+    background   : rgba(59,130,246,.05) !important;
+    transform    : translateY(-1px) !important;
 }
+#browse-btn > button:active, #send-btn > button:active { transform:translateY(0) !important; }
 
 /* == Keep ================================================================== */
 #keep-btn > button {
-    background   : transparent !important;
+    background   : rgba(16,185,129,.08) !important;
     color        : #10b981    !important;
-    border       : 1px solid rgba(16,185,129,.25) !important;
+    border       : 1px solid rgba(16,185,129,.3) !important;
     border-radius: 6px !important;
-    font-weight  : 600 !important;
+    font-weight  : 700 !important;
     font-size    : .88em !important;
-    transition   : all .15s !important;
+    letter-spacing: 0.3px !important;
+    transition   : all .18s ease !important;
 }
 #keep-btn > button:hover {
-    background   : rgba(16,185,129,.06) !important;
-    border-color : rgba(16,185,129,.5) !important;
+    background   : rgba(16,185,129,.14) !important;
+    border-color : rgba(16,185,129,.6) !important;
+    box-shadow   : 0 0 14px rgba(16,185,129,.2) !important;
+    transform    : translateY(-1px) !important;
 }
+#keep-btn > button:active { transform:translateY(0) !important; }
 
 /* == Delete ================================================================ */
 #delete-btn > button {
     background   : transparent !important;
-    color        : #334155     !important;
-    border       : 1px solid #1a2540 !important;
+    color        : var(--t-txd) !important;
+    border       : 1px solid var(--t-bdr) !important;
     border-radius: 6px  !important;
     font-weight  : 600  !important;
     font-size    : .88em !important;
-    transition   : all .15s !important;
+    letter-spacing: 0.3px !important;
+    transition   : all .18s ease !important;
 }
 #delete-btn > button:hover {
-    color:#ef4444 !important; border-color:rgba(239,68,68,.3) !important;
+    color        : #ef4444 !important;
+    border-color : rgba(239,68,68,.4) !important;
+    background   : rgba(239,68,68,.05) !important;
+    transform    : translateY(-1px) !important;
 }
+#delete-btn > button:active { transform:translateY(0) !important; }
 
 /* == Save row ============================================================== */
 #save-row {
-    border       : 1px solid #1a2540 !important;
-    border-radius: 8px  !important;
-    padding      : 12px !important;
-    margin-top   : 14px !important;
+    border        : 1px solid rgba(16,185,129,.2) !important;
+    border-radius : 8px  !important;
+    padding       : 14px !important;
+    margin-top    : 16px !important;
+    background    : rgba(16,185,129,.03) !important;
 }
 
 /* == Animations ============================================================ */
-@keyframes dta-pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+@keyframes dta-pulse  { 0%,100%{opacity:1} 50%{opacity:.35} }
+@keyframes dta-fadein { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+
+/* == Theme switcher ======================================================== */
+#theme-dd { max-width:160px !important; }
+#theme-dd select { font-size:0.78em !important; border-radius:20px !important; padding:3px 8px !important; }
+#theme-dd label span { display:none !important; }
+
+/* == Comments / metadata form ============================================== */
+#comments-form {
+    border        : 1px solid rgba(16,185,129,.2) !important;
+    border-radius : 8px  !important;
+    padding       : 14px !important;
+    margin-top    : 12px !important;
+    background    : rgba(16,185,129,.02) !important;
+    animation     : dta-fadein .25s ease both !important;
+}
+#confirm-save-btn > button {
+    background    : #10b981 !important;
+    color         : #fff    !important;
+    border        : none    !important;
+    border-radius : 6px     !important;
+    font-weight   : 700     !important;
+    letter-spacing: 0.4px   !important;
+    transition    : all .18s ease !important;
+}
+#confirm-save-btn > button:hover {
+    background    : #059669 !important;
+    box-shadow    : 0 0 16px rgba(16,185,129,.3) !important;
+    transform     : translateY(-1px) !important;
+}
+#confirm-save-btn > button:active { transform:translateY(0) !important; }
+#cancel-save-btn > button {
+    background    : transparent !important;
+    color         : var(--t-txd) !important;
+    border        : 1px solid var(--t-bdr) !important;
+    border-radius : 6px !important;
+    font-weight   : 500 !important;
+    transition    : all .15s ease !important;
+}
+#cancel-save-btn > button:hover {
+    color         : var(--t-txt) !important;
+    border-color  : var(--t-txg) !important;
+}
 """
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ↓ BELOW: Theme CSS overrides — each redefines the :root CSS variables
+# ─────────────────────────────────────────────────────────────────────────────
+
+_THEME_CSS: dict[str, str] = {
+    "Orbital": "",  # default — no override needed
+
+    "Retro": """<style>
+:root {
+    --t-bg:    #020602; --t-panel: #030903; --t-surf: #040b04; --t-elev: #060e06;
+    --t-bdr:   #0f2a0f; --t-bdr2: #081508;
+    --t-acc:   #00cc44; --t-acc2: #00ff66;
+    --t-txt:   #4d9960; --t-txh:  #80ff99; --t-txd:  #2d6b3d; --t-txg:  #1a3d22;
+}
+.gradio-container { background: #020602 !important; }
+textarea, input[type="text"], input[type="number"] { color: #80ff99 !important; caret-color: #00ff66; }
+#run-btn > button { background: #00aa33 !important; }
+#run-btn > button:hover { background: #00cc44 !important; box-shadow: 0 4px 14px rgba(0,204,68,.35) !important; }
+</style>""",
+
+    "Amber": """<style>
+:root {
+    --t-bg:    #0c0700; --t-panel: #0f0900; --t-surf: #130b00; --t-elev: #170d00;
+    --t-bdr:   #3d2200; --t-bdr2: #1f1100;
+    --t-acc:   #e8900a; --t-acc2: #ffb830;
+    --t-txt:   #8a6520; --t-txh:  #f0c040; --t-txd:  #5c4010; --t-txg:  #3d2a00;
+}
+.gradio-container { background: #0c0700 !important; }
+textarea, input[type="text"], input[type="number"] { color: #f0c040 !important; caret-color: #ffb830; }
+#run-btn > button { background: #c07000 !important; }
+#run-btn > button:hover { background: #e8900a !important; box-shadow: 0 4px 14px rgba(232,144,10,.35) !important; }
+</style>""",
+
+    "Synthwave": """<style>
+:root {
+    --t-bg:    #0d0015; --t-panel: #130020; --t-surf: #170026; --t-elev: #1c002f;
+    --t-bdr:   #3d0066; --t-bdr2: #1f0035;
+    --t-acc:   #c026d3; --t-acc2: #06b6d4;
+    --t-txt:   #9f6bc4; --t-txh:  #e879f9; --t-txd:  #5c3080; --t-txg:  #3d1f55;
+}
+.gradio-container { background: #0d0015 !important; }
+textarea, input[type="text"], input[type="number"] { color: #e879f9 !important; caret-color: #c026d3; }
+#run-btn > button { background: linear-gradient(135deg, #7c3aed, #c026d3) !important; }
+#run-btn > button:hover { background: linear-gradient(135deg, #9333ea, #db2777) !important; box-shadow: 0 4px 14px rgba(192,38,211,.4) !important; }
+</style>""",
+
+    "Arctic": """<style>
+:root {
+    --t-bg:    #f0f4f8; --t-panel: #e2e8f0; --t-surf: #ffffff; --t-elev: #dce3ea;
+    --t-bdr:   #cbd5e1; --t-bdr2: #e2e8f0;
+    --t-acc:   #1d4ed8; --t-acc2: #0284c7;
+    --t-txt:   #475569; --t-txh:  #0f172a; --t-txd:  #64748b; --t-txg:  #94a3b8;
+}
+.gradio-container { background: #f0f4f8 !important; }
+.main { background: #f0f4f8 !important; }
+textarea, input[type="text"], input[type="number"] {
+    color: #0f172a !important;
+    background: #ffffff !important;
+    border-color: #cbd5e1 !important;
+}
+textarea:focus, input:focus { box-shadow: 0 0 0 3px rgba(29,78,216,.12) !important; }
+select { color: #0f172a !important; }
+label span, .label-wrap span { color: #64748b !important; }
+#run-btn > button { background: #1d4ed8 !important; box-shadow: 0 1px 3px rgba(0,0,0,.15) !important; }
+#run-btn > button:hover { background: #2563eb !important; box-shadow: 0 4px 14px rgba(29,78,216,.3) !important; }
+</style>""",
+}
+
+
+def apply_theme(theme: str) -> str:
+    return _THEME_CSS.get(theme, "")
+
 
 # ── Status pill ──────────────────────────────────────────────────────────────
 _STATUS_CFG: dict[str, tuple] = {
-    "Ready":   ("#2d3f5a", ""),
-    "Running": ("#3b82f6", "animation:dta-pulse 1.4s ease-in-out infinite;"),
-    "PASS":    ("#10b981", ""),
-    "FAIL":    ("#ef4444", ""),
-    "Error":   ("#f59e0b", ""),
+    "Ready":   ("var(--t-txd)", "var(--t-bdr)", "var(--t-surf)", ""),
+    "Running": ("#3b82f6", "rgba(59,130,246,.35)",  "rgba(59,130,246,.07)",  "animation:dta-pulse 1.4s ease-in-out infinite;"),
+    "PASS":    ("#10b981", "rgba(16,185,129,.4)",   "rgba(16,185,129,.07)",  ""),
+    "FAIL":    ("#ef4444", "rgba(239,68,68,.4)",    "rgba(239,68,68,.07)",   ""),
+    "Error":   ("#f59e0b", "rgba(245,158,11,.4)",   "rgba(245,158,11,.07)",  ""),
 }
 
 def _status_html(status: str) -> str:
-    color, anim = _STATUS_CFG.get(status, _STATUS_CFG["Ready"])
+    cfg = _STATUS_CFG.get(status, _STATUS_CFG["Ready"])
+    color, border_color, bg_color, anim = cfg
     return (
-        f"<div style='display:flex;align-items:center;gap:9px;"
-        f"padding:8px 14px;background:#0c1220;"
-        f"border:1px solid #1a2540;border-radius:6px;{anim}'>"
-        f"<div style='width:7px;height:7px;border-radius:50%;"
-        f"background:{color};box-shadow:0 0 7px {color};flex-shrink:0;'></div>"
+        f"<div style='display:flex;align-items:center;gap:10px;"
+        f"padding:9px 16px;background:{bg_color};"
+        f"border:1px solid {border_color};"
+        f"border-radius:7px;transition:all .3s ease;{anim}'>"
+        f"<div style='width:8px;height:8px;border-radius:50%;"
+        f"background:{color};box-shadow:0 0 9px {color};flex-shrink:0;'></div>"
         f"<span style='color:{color};font-family:ui-monospace,Consolas,monospace;"
-        f"font-size:0.8em;font-weight:600;letter-spacing:2.5px;"
-        f"text-transform:uppercase;'>{status}</span></div>"
+        f"font-size:0.78em;font-weight:700;letter-spacing:3px;"
+        f"text-transform:uppercase;'>{status}</span>"
+        f"</div>"
     )
 
 def _section_header(title: str) -> str:
     return (
-        f"<div style='color:#1e3050;font-size:0.63em;font-weight:700;"
+        f"<div style='color:var(--t-txd);font-size:0.63em;font-weight:700;"
         f"text-transform:uppercase;letter-spacing:2px;"
-        f"padding:16px 0 7px 0;'>{title}</div>"
+        f"padding:16px 0 7px 0;border-bottom:1px solid var(--t-bdr2);margin-bottom:8px;'>{title}</div>"
     )
 
 _HEADER_HTML = (
@@ -968,7 +1180,18 @@ def build_gui() -> gr.Blocks:
         css=_CSS,
     ) as demo:
 
-        gr.HTML(value=_HEADER_HTML)
+        theme_css = gr.HTML(value="", visible=True)
+
+        with gr.Row(elem_classes=["header-row"]):
+            with gr.Column(scale=4):
+                gr.HTML(value=_HEADER_HTML)
+            with gr.Column(scale=1, min_width=120):
+                theme_dd = gr.Dropdown(
+                    choices=["Orbital", "Retro", "Amber", "Synthwave", "Arctic"],
+                    value="Orbital",
+                    label="Theme",
+                    elem_id="theme-dd",
+                )
 
         with gr.Row(equal_height=False):
 
@@ -992,6 +1215,18 @@ def build_gui() -> gr.Blocks:
                 )
                 rails_cb = gr.CheckboxGroup(
                     choices=[], label="Rails", visible=False,
+                )
+
+                gr.HTML(value=_section_header("Test Session"))
+                tester_name_tb = gr.Textbox(
+                    label="Engineers Name",
+                    placeholder="Your name…",
+                    lines=1,
+                )
+                board_serial_tb = gr.Textbox(
+                    label="Board Serial / Batch #",
+                    placeholder="e.g. CPU-001, SN-2024-A3…",
+                    lines=1,
                 )
 
                 gr.HTML(value=_section_header("Output"))
@@ -1035,6 +1270,18 @@ def build_gui() -> gr.Blocks:
                                            elem_id="keep-btn")
                     delete_btn = gr.Button("Delete Results", variant="stop",
                                            elem_id="delete-btn")
+
+                with gr.Column(elem_id="comments-form", visible=False) as comments_form:
+                    comments_tb = gr.Textbox(
+                        label="Test Comments",
+                        placeholder="Observations, anomalies, pass conditions, anything noteworthy…",
+                        lines=3,
+                    )
+                    with gr.Row():
+                        confirm_save_btn = gr.Button("Confirm & Save", variant="primary",
+                                                     elem_id="confirm-save-btn")
+                        cancel_save_btn  = gr.Button("← Back",
+                                                     elem_id="cancel-save-btn")
 
         # ── Event handlers and wiring ──────────────────────────────────────────
 
@@ -1092,15 +1339,28 @@ def build_gui() -> gr.Blocks:
         # ← Wire textbox Enter key to input handler (same function)
         send_tb.submit( fn=send_to_test, inputs=send_tb, outputs=send_tb)  # ← Send on Enter key
 
-        # ← Wire Keep Results button
-        keep_btn.click(  fn=keep_results,   outputs=[log_html, save_row])  # ← Show kept message and hide buttons
-        
-        # ← Wire Delete Results button
-        delete_btn.click(fn=delete_results, outputs=[log_html, save_row])  # ← Delete and hide buttons
+        # ← Keep: hide save row, reveal comments form
+        keep_btn.click(fn=on_keep_click, outputs=[save_row, comments_form])
+
+        # ← Cancel: put save row back, hide comments form
+        cancel_save_btn.click(fn=on_cancel_keep, outputs=[save_row, comments_form])
+
+        # ← Confirm & Save: write metadata.json, clear form, show confirmation
+        confirm_save_btn.click(
+            fn=confirm_keep,
+            inputs=[tester_name_tb, board_serial_tb, board_dd, suite_dd, comments_tb],
+            outputs=[log_html, comments_form, comments_tb],
+        )
+
+        # ← Delete Results button
+        delete_btn.click(fn=delete_results, outputs=[log_html, save_row])
 
         # ← Initialize interface when page loads
         demo.load(fn=on_suite_change, inputs=[board_dd, suite_dd],  # ← Call suite change handler with default values
                   outputs=[mode_dd, rails_cb, instr_html])  # ← Update these outputs
+
+        # ← Wire theme dropdown to inject CSS variable overrides
+        theme_dd.change(fn=apply_theme, inputs=theme_dd, outputs=theme_css)
 
     return demo  # ← Return the completed interface
 

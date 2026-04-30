@@ -834,82 +834,87 @@ class InputRangeOVPTest:
             # Exit the method early — no data means no graphs
             return
 
-        # Extract the list of sweep samples into a local variable for convenience
         samp       = sweep.samples
-        # Build a list of elapsed times (in seconds) from each sample, used as the x-axis for all graphs
         times      = [s.elapsed_s      for s in samp]
-        # Build a list of PSU commanded setpoint voltages at each sample
         setpoints  = [s.psu_setpoint_v for s in samp]
-        # Build a list of PSU actually measured voltages at each sample
         psu_v      = [s.psu_measured_v for s in samp]
-        # Build a list of PSU measured currents at each sample
         psu_i      = [s.psu_current_a  for s in samp]
-        # Build a list of DMM measured output voltages at each sample
         dmm_v      = [s.dmm_v          for s in samp]
-        # Build a list of real wall-clock timestamps at each sample (used for the DMM time-axis graph)
         real_times = [s.real_time      for s in samp]
 
-        # Build the title string for both graphs showing the voltage range that was swept
         sweep_title = f"{int(self._sweep_start_v)}-{int(self._sweep_max_v)}V Vin"
 
-        # Create Figure 1 with two side-by-side subplots: one for PSU voltage, one for PSU current
-        fig1, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-        # Set the overall title for Figure 1
-        fig1.suptitle(sweep_title, fontweight='bold')
-        # Plot the commanded setpoint voltage as a dashed line on the left subplot
-        ax1.plot(times, setpoints, '--', color='steelblue', linewidth=1.2, label='Setpoint', alpha=0.8)
-        # Plot the measured PSU voltage as a solid line on the left subplot
-        ax1.plot(times, psu_v,     '-',  color='steelblue', linewidth=1.5, label='Measured')
-        # Label the x-axis and y-axis of the voltage subplot
+        # Digantara dark theme
+        _BG      = "#0a0f1e"
+        _PANEL   = "#0c1220"
+        _GRID    = "#1a2540"
+        _TEXT    = "#8892a4"
+        _BLUE    = "#2563eb"
+        _CYAN    = "#4fc3f7"
+
+        plt.rcParams.update({
+            "figure.facecolor":  _BG,
+            "axes.facecolor":    _PANEL,
+            "axes.edgecolor":    _GRID,
+            "axes.labelcolor":   _TEXT,
+            "axes.titlecolor":   "#c8d6ea",
+            "axes.titlesize":    10,
+            "axes.labelsize":    9,
+            "axes.grid":         True,
+            "grid.color":        _GRID,
+            "grid.alpha":        0.6,
+            "grid.linestyle":    "--",
+            "xtick.color":       _TEXT,
+            "ytick.color":       _TEXT,
+            "xtick.labelsize":   8,
+            "ytick.labelsize":   8,
+            "legend.facecolor":  _PANEL,
+            "legend.edgecolor":  _GRID,
+            "legend.labelcolor": _TEXT,
+            "legend.fontsize":   8,
+            "text.color":        _TEXT,
+            "savefig.facecolor": _BG,
+        })
+
+        def _watermark(fig):
+            fig.text(0.99, 0.01, "Digantara Research & Technologies",
+                     ha='right', va='bottom', fontsize=6.5,
+                     color="#1e2d47", style='italic', transform=fig.transFigure)
+            fig.text(0.01, 0.01, f"Run: {self._timestamp}",
+                     ha='left', va='bottom', fontsize=6.5,
+                     color="#1e2d47", transform=fig.transFigure)
+
+        fig1, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5), facecolor=_BG)
+        fig1.suptitle(sweep_title, fontweight='bold', color="#c8d6ea", fontsize=11)
+        ax1.plot(times, setpoints, '--', color=_CYAN, linewidth=1.2, label='Setpoint', alpha=0.7)
+        ax1.plot(times, psu_v,     '-',  color=_BLUE, linewidth=1.8, label='Measured')
         ax1.set_xlabel("Time (s)"); ax1.set_ylabel("Voltage (V)")
-        # Set the title for the voltage subplot
-        ax1.set_title("CH1 Voltage - Live Execution Data")
-        # Add a legend, grid lines, and set the y-axis minimum to -0.5 V to avoid clipping near zero
-        ax1.legend(); ax1.grid(True, alpha=0.3); ax1.set_ylim(bottom=-0.5)
-        # Plot the PSU current on the right subplot
-        ax2.plot(times, psu_i, '-', color='steelblue', linewidth=1.5)
-        # Label the x-axis and y-axis of the current subplot
+        ax1.set_title("CH1 Voltage — Live Execution Data")
+        ax1.legend(); ax1.set_ylim(bottom=-0.5)
+        ax2.plot(times, psu_i, '-', color=_BLUE, linewidth=1.8)
         ax2.set_xlabel("Time (s)"); ax2.set_ylabel("Current (A)")
-        # Set the title for the current subplot
-        ax2.set_title("CH1 Current - Live Execution Data")
-        # Add a grid and set the y-axis minimum to 0 since current cannot be negative in this test
-        ax2.grid(True, alpha=0.3); ax2.set_ylim(bottom=0)
-        # Apply tight layout to minimise wasted whitespace in the figure
+        ax2.set_title("CH1 Current — Live Execution Data")
+        ax2.set_ylim(bottom=0)
+        _watermark(fig1)
         plt.tight_layout()
-        # Build the full output file path for the PSU sweep graph
         p1 = self._plots_dir / f"psu_sweep_{self._timestamp}.png"
-        # Save Figure 1 to a PNG file at 1200 DPI with tight bounding box
-        fig1.savefig(str(p1), dpi=1200, bbox_inches='tight')
-        # Close Figure 1 to free memory
+        fig1.savefig(str(p1), dpi=1200, bbox_inches='tight', facecolor=_BG)
         plt.close(fig1)
-        # Print a confirmation message showing where the PSU graph was saved
         print(f"  Saved: plots/{p1.name}")
 
-        # Create Figure 2: a single plot showing the DMM output voltage over real wall-clock time
-        fig2, ax3 = plt.subplots(figsize=(10, 5))
-        # Set the overall title for Figure 2
-        fig2.suptitle(sweep_title, fontweight='bold')
-        # Plot the DMM output voltage against real-time timestamps using plot_date for proper time-axis handling
-        ax3.plot_date(real_times, dmm_v, '-', color='steelblue', linewidth=1.5, xdate=True)
-        # Format the x-axis tick labels as HH:MM:SS time strings
+        fig2, ax3 = plt.subplots(figsize=(10, 5), facecolor=_BG)
+        fig2.suptitle(sweep_title, fontweight='bold', color="#c8d6ea", fontsize=11)
+        ax3.plot_date(real_times, dmm_v, '-', color=_BLUE, linewidth=1.8, xdate=True)
         ax3.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-        # Rotate and align the x-axis labels to prevent overlap
         fig2.autofmt_xdate()
-        # Label the x-axis and y-axis of the DMM graph
         ax3.set_xlabel("Time"); ax3.set_ylabel("Measurement Value (V)")
-        # Set the title for the DMM graph including the voltage range
-        ax3.set_title(f"DMM Output - {sweep_title}")
-        # Add a grid and set the y-axis minimum slightly below zero to show near-zero readings clearly
-        ax3.grid(True, alpha=0.3); ax3.set_ylim(bottom=-0.05)
-        # Apply tight layout
+        ax3.set_title(f"DMM Output — {sweep_title}")
+        ax3.set_ylim(bottom=-0.05)
+        _watermark(fig2)
         plt.tight_layout()
-        # Build the full output file path for the DMM sweep graph
         p2 = self._plots_dir / f"dmm_sweep_{self._timestamp}.png"
-        # Save Figure 2 to a PNG file at 1200 DPI
-        fig2.savefig(str(p2), dpi=1200, bbox_inches='tight')
-        # Close Figure 2 to free memory
+        fig2.savefig(str(p2), dpi=1200, bbox_inches='tight', facecolor=_BG)
         plt.close(fig2)
-        # Print a confirmation message showing where the DMM graph was saved
         print(f"  Saved: plots/{p2.name}")
 
     # ─────────────────────────────────────────────────────────────
